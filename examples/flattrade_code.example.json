@@ -1,0 +1,8 @@
+{
+  "params": {
+    "requestCode": "SAMPLE_REQUEST_CODE_FROM_REDIRECT",
+    "client": "FTXXXXXX" 
+  },
+  "raw_query": "requestCode=SAMPLE_REQUEST_CODE_FROM_REDIRECT&client=FTXXXXXX",
+  "note": "This is an example file. The real flattrade_code.json is generated automatically by your callback endpoint."
+}
