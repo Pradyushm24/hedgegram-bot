@@ -1,0 +1,46 @@
+version: "3.9"
+
+services:
+  api:
+    container_name: hedgegram_api
+    build:
+      context: .
+    command: >
+      bash -c "
+        echo 'Starting Hedgegram API...' &&
+        source /app/.env &&
+        uvicorn main:app --host 0.0.0.0 --port 8000 --log-level info
+      "
+    env_file:
+      - .env
+    volumes:
+      - ./:/app
+      - ./logs:/app/logs
+      - ./live_auth.json:/app/live_auth.json
+    restart: always
+    ports:
+      - "8000:8000"
+
+  telegram:
+    container_name: hedgegram_telegram_bot
+    build:
+      context: .
+    command: >
+      bash -c "
+        echo 'Starting Telegram Bot...' &&
+        source /app/.env &&
+        python3 telegram_bot.py
+      "
+    env_file:
+      - .env
+    depends_on:
+      - api
+    volumes:
+      - ./:/app
+      - ./logs:/app/logs
+      - ./live_auth.json:/app/live_auth.json
+    restart: always
+
+# Optional: Use if you want to store data persistently in a named volume
+volumes:
+  hedgegram_data:
