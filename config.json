@@ -1,0 +1,71 @@
+{
+  "strategy_name": "FINNIFTY_MONTHLY_OTM_SPREAD",
+
+  "instrument": {
+    "index": "FINNIFTY",
+    "lot_size": 65,
+    "expiry_type": "monthly"
+  },
+
+  "entry": {
+    "enabled": true,
+    "start_time": "09:20",
+
+    "legs": [
+      {
+        "type": "BUY",
+        "option": "CE",
+        "strike_offset": 5,
+        "qty_lots": 1
+      },
+      {
+        "type": "SELL",
+        "option": "CE",
+        "strike_offset": 3,
+        "qty_lots": 1
+      },
+      {
+        "type": "BUY",
+        "option": "PE",
+        "strike_offset": 5,
+        "qty_lots": 1
+      },
+      {
+        "type": "SELL",
+        "option": "PE",
+        "strike_offset": 3,
+        "qty_lots": 1
+      }
+    ]
+  },
+
+  "sl": {
+    "use_trailing": true,
+    "trigger_pnl": 300,
+    "buffer": 50,
+    "trail_step": 1
+  },
+
+  "reentry": {
+    "enabled": true,
+    "cooldown_minutes": 5
+  },
+
+  "exit": {
+    "exit_on_sl": true,
+    "force_exit_time": "14:00"
+  },
+
+  "telegram": {
+    "alerts": true,
+    "send_entry": true,
+    "send_exit": true,
+    "send_pnl_updates": true
+  },
+
+  "live": {
+    "enabled": false,
+    "order_product": "MIS",
+    "exchange": "NFO"
+  }
+}
