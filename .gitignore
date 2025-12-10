@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+env/
+venv/
+.venv/
+
+# Secrets and runtime files
+*.env
+secrets/
+live_auth.json
+flattrade_code.json
+*.log
+*.db
+
+# Editor/OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Docker
+docker-compose.override.yml
