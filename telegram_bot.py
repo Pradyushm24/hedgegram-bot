@@ -24,29 +24,35 @@ async def call(endpoint, method="GET", data=None):
 
 async def start(u, c):
     if not is_admin(u): return
-    await u.message.reply_text(await call("start","POST"))
+    await u.message.reply_text(await call("start", "POST"))
 
-async def stop(u,c):
+async def stop(u, c):
     if not is_admin(u): return
-    await u.message.reply_text(await call("stop","POST"))
+    await u.message.reply_text(await call("stop", "POST"))
 
-async def status(u,c):
+async def status(u, c):
     if not is_admin(u): return
     await u.message.reply_text(await call("status"))
 
-async def totp(u,c):
+async def totp(u, c):
     if not is_admin(u): return
-    if not c.args: return
-    await u.message.reply_text(await call("totp","POST",{"totp":c.args[0]}))
+    if not c.args:
+        await u.message.reply_text("Usage: /totp 123456")
+        return
+    await u.message.reply_text(await call("totp", "POST", {"totp": c.args[0]}))
 
-async def panic(u,c):
+async def panic(u, c):
     if not is_admin(u): return
-    await u.message.reply_text(await call("panic","POST"))
+    if not c.args or c.args[0].lower() != "confirm":
+        await u.message.reply_text("⚠️ To confirm: /panic confirm")
+        return
+    await u.message.reply_text(await call("panic", "POST"))
 
 app = ApplicationBuilder().token(TOKEN).build()
-app.add_handler(CommandHandler("start",start))
-app.add_handler(CommandHandler("stop",stop))
-app.add_handler(CommandHandler("status",status))
-app.add_handler(CommandHandler("totp",totp))
-app.add_handler(CommandHandler("panic",panic))
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("stop", stop))
+app.add_handler(CommandHandler("status", status))
+app.add_handler(CommandHandler("totp", totp))
+app.add_handler(CommandHandler("panic", panic))
+
 app.run_polling()
