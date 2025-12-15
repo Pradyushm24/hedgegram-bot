@@ -1,58 +1,129 @@
 #!/usr/bin/env python3
-import os, asyncio, aiohttp
-from dotenv import load_dotenv
-from telegram.ext import ApplicationBuilder, CommandHandler
+import os
+import asyncio
+import aiohttp
 
+from dotenv import load_dotenv
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+)
+
+# ================== INIT ==================
 load_dotenv()
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ADMIN = str(os.getenv("TELEGRAM_CHAT_ID"))
-API = os.getenv("CONTROL_API_URL")
-KEY = os.getenv("CONTROL_API_KEY")
+ADMIN_CHAT_ID = str(os.getenv("TELEGRAM_CHAT_ID"))
+CONTROL_API_URL = os.getenv("CONTROL_API_URL", "http://127.0.0.1:8000/control")
+CONTROL_API_KEY = os.getenv("CONTROL_API_KEY")
 
-def is_admin(update):
-    return str(update.effective_chat.id) == ADMIN
+if not TOKEN or not ADMIN_CHAT_ID or not CONTROL_API_KEY:
+    raise RuntimeError("Missing TELEGRAM or CONTROL API env variables")
 
-async def call(endpoint, method="GET", data=None):
-    headers = {"x-api-key": KEY}
-    async with aiohttp.ClientSession() as s:
-        if method == "POST":
-            async with s.post(f"{API}/{endpoint}", json=data, headers=headers) as r:
-                return await r.text()
-        async with s.get(f"{API}/{endpoint}", headers=headers) as r:
-            return await r.text()
+# ================== HELPERS ==================
+def is_admin(update: Update) -> bool:
+    return str(update.effective_chat.id) == ADMIN_CHAT_ID
 
-async def start(u, c):
-    if not is_admin(u): return
-    await u.message.reply_text(await call("start", "POST"))
+async def call_api(endpoint: str, method="GET", payload=None):
+    headers = {"x-api-key": CONTROL_API_KEY}
+    url = f"{CONTROL_API_URL}/{endpoint}"
 
-async def stop(u, c):
-    if not is_admin(u): return
-    await u.message.reply_text(await call("stop", "POST"))
+    async with aiohttp.ClientSession() as session:
+        try:
+            if method == "POST":
+                async with session.post(url, json=payload, headers=headers) as r:
+                    return await r.text()
+            else:
+                async with session.get(url, headers=headers) as r:
+                    return await r.text()
+        except Exception as e:
+            return f"API error: {e}"
 
-async def status(u, c):
-    if not is_admin(u): return
-    await u.message.reply_text(await call("status"))
-
-async def totp(u, c):
-    if not is_admin(u): return
-    if not c.args:
-        await u.message.reply_text("Usage: /totp 123456")
+# ================== COMMANDS ==================
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
         return
-    await u.message.reply_text(await call("totp", "POST", {"totp": c.args[0]}))
+    res = await call_api("start", "POST")
+    await update.message.reply_text(res)
 
-async def panic(u, c):
-    if not is_admin(u): return
-    if not c.args or c.args[0].lower() != "confirm":
-        await u.message.reply_text("⚠️ To confirm: /panic confirm")
+async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
         return
-    await u.message.reply_text(await call("panic", "POST"))
+    res = await call_api("stop", "POST")
+    await update.message.reply_text(res)
 
-app = ApplicationBuilder().token(TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("stop", stop))
-app.add_handler(CommandHandler("status", status))
-app.add_handler(CommandHandler("totp", totp))
-app.add_handler(CommandHandler("panic", panic))
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        return
+    res = await call_api("status")
+    await update.message.reply_text(res)
 
-app.run_polling()
+async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        return
+
+    if not context.args or context.args[0] not in ("paper", "live"):
+        await update.message.reply_text("Usage:\n/mode paper\n/mode live")
+        return
+
+    mode = context.args[0]
+    res = await call_api("mode", "POST", {"mode": mode})
+    await update.message.reply_text(res)
+
+async def totp_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /totp 123456")
+        return
+
+    code = context.args[0]
+    res = await call_api("totp", "POST", {"totp": code})
+    await update.message.reply_text(res)
+
+async def panic_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        return
+
+    if not context.args or context.args[0].lower() != "confirm":
+        await update.message.reply_text("⚠️ To confirm: /panic confirm")
+        return
+
+    res = await call_api("panic", "POST")
+    await update.message.reply_text(res)
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        return
+
+    await update.message.reply_text(
+        "📌 Hedgegram Commands\n\n"
+        "/start  → Start bot\n"
+        "/stop   → Stop bot\n"
+        "/status → Bot status\n"
+        "/mode paper → Paper trading\n"
+        "/mode live  → Live trading\n"
+        "/totp 123456 → Refresh live token\n"
+        "/panic confirm → Emergency exit\n"
+    )
+
+# ================== RUN ==================
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("stop", stop_cmd))
+    app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(CommandHandler("mode", mode_cmd))
+    app.add_handler(CommandHandler("totp", totp_cmd))
+    app.add_handler(CommandHandler("panic", panic_cmd))
+    app.add_handler(CommandHandler("help", help_cmd))
+
+    print("✅ Telegram bot started")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
