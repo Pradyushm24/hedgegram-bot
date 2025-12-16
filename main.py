@@ -26,6 +26,11 @@ FLAT_ID = os.getenv("FLATTRADE_CLIENT_ID")
 FLAT_SECRET = os.getenv("FLATTRADE_API_SECRET")
 LOGIN_URL = os.getenv("FLATTRADE_LOGIN_URL")
 
+TRADE_MODE_PIN = os.getenv("TRADE_MODE_PIN", "0000")
+
+MARGIN_ALERT = int(os.getenv("MARGIN_ALERT", "100000"))
+MARGIN_EXIT = int(os.getenv("MARGIN_EXIT", "80000"))
+
 LIVE_AUTH_FILE = "live_auth.json"
 TRADE_MODE_FILE = "trade_mode.json"
 
@@ -51,11 +56,7 @@ def notify(msg: str):
         if not token or not chat:
             return
         url = f"https://api.telegram.org/bot{token}/sendMessage"
-        requests.post(
-            url,
-            json={"chat_id": chat, "text": msg},
-            timeout=5
-        )
+        requests.post(url, json={"chat_id": chat, "text": msg}, timeout=5)
     except Exception:
         pass
 
@@ -88,6 +89,13 @@ def load_live_auth():
     except Exception:
         return None
 
+# ================== MARGIN ==================
+def fetch_available_margin():
+    """
+    Replace with real broker margin API.
+    """
+    return 250000  # dummy safe margin
+
 # ================== PAPER MOCK ==================
 def paper_positions():
     return [
@@ -96,10 +104,7 @@ def paper_positions():
     ]
 
 def calc_pnl(pos):
-    return round(
-        sum((p["ltp"] - p["avg"]) * p["qty"] for p in pos),
-        2
-    )
+    return round(sum((p["ltp"] - p["avg"]) * p["qty"] for p in pos), 2)
 
 # ================== EXIT ALL ==================
 def exit_all(reason: str):
@@ -108,15 +113,14 @@ def exit_all(reason: str):
     last_error = reason
     log.error("BOT STOPPED: %s", reason)
     notify(f"🚨 BOT STOPPED\nReason: {reason}\nAll positions exited")
-    # 🔴 Real live cancel logic can be added here
 
 # ================== STRATEGY LOOP ==================
 def strategy():
-    global running, positions, pnl, last_error
+    global running, positions, pnl
 
     mode = get_mode()
-    log.info("Strategy started (%s)", mode)
     notify(f"✅ Bot started in {mode.upper()} mode")
+    log.info("Strategy started (%s)", mode)
 
     while running:
         try:
@@ -125,13 +129,21 @@ def strategy():
             else:
                 authd = load_live_auth()
                 if not authd or "jwtToken" not in authd:
-                    raise RuntimeError("Live auth missing or expired")
+                    raise RuntimeError("Live auth missing / expired")
 
-                # 🔴 LIVE FETCH LOGIC PLACEHOLDER
-                positions = []
+                positions = []  # 🔴 live positions API later
 
             pnl = calc_pnl(positions)
-            log.info("PNL: %s", pnl)
+            margin = fetch_available_margin()
+
+            log.info("PNL: %s | Margin: %s", pnl, margin)
+
+            if margin <= MARGIN_EXIT:
+                exit_all(f"MARGIN CRITICAL ₹{margin}")
+                break
+
+            if margin <= MARGIN_ALERT:
+                notify(f"⚠️ Margin Low Alert\nAvailable ₹{margin}")
 
         except Exception as e:
             exit_all(str(e))
@@ -154,7 +166,7 @@ def expiry_watcher():
             now = datetime.datetime.now()
             if (
                 not expiry_done
-                and now.weekday() == 3      # Thursday
+                and now.weekday() == 3
                 and now.hour == 14
                 and now.minute == 0
             ):
@@ -166,7 +178,27 @@ def expiry_watcher():
 
         time.sleep(30)
 
+# ================== DAILY STATUS ==================
+def daily_status():
+    while True:
+        now = datetime.datetime.now()
+        if now.hour == 9 and now.minute == 10:
+            try:
+                notify(
+                    "📊 Daily Status\n"
+                    f"Mode: {get_mode().upper()}\n"
+                    f"Running: {running}\n"
+                    f"PnL: ₹{pnl}\n"
+                    f"Margin: ₹{fetch_available_margin()}\n"
+                    f"Positions: {len(positions)}"
+                )
+                time.sleep(60)
+            except Exception:
+                pass
+        time.sleep(30)
+
 threading.Thread(target=expiry_watcher, daemon=True).start()
+threading.Thread(target=daily_status, daemon=True).start()
 
 # ================== API ==================
 @app.post("/control/start")
@@ -193,23 +225,31 @@ def status(_: bool = Depends(auth)):
         "last_error": last_error,
     }
 
+@app.post("/control/mode")
+def mode(payload: dict, _: bool = Depends(auth)):
+    mode = payload.get("mode")
+    pin = payload.get("pin")
+
+    if mode not in ("paper", "live"):
+        raise HTTPException(400, "Invalid mode")
+
+    if pin != TRADE_MODE_PIN:
+        raise HTTPException(403, "Invalid PIN")
+
+    set_mode(mode)
+    notify(f"⚙️ Trade mode set to {mode.upper()}")
+    return {"status": "ok", "mode": mode}
+
 @app.post("/control/totp")
 def totp(payload: dict, _: bool = Depends(auth)):
     code = payload.get("totp")
     if not code:
         raise HTTPException(400, "Missing TOTP")
 
-    pwd = hashlib.sha256(
-        (FLAT_ID + code + FLAT_SECRET).encode()
-    ).hexdigest()
-
+    pwd = hashlib.sha256((FLAT_ID + code + FLAT_SECRET).encode()).hexdigest()
     r = requests.post(
         LOGIN_URL,
-        json={
-            "UserName": FLAT_ID,
-            "totp": code,
-            "password": pwd,
-        },
+        json={"UserName": FLAT_ID, "totp": code, "password": pwd},
         timeout=15,
     )
 
@@ -221,15 +261,6 @@ def totp(payload: dict, _: bool = Depends(auth)):
     save_live_auth(data)
     notify("🔐 Live access token refreshed")
     return {"status": "ok"}
-
-@app.post("/control/mode")
-def mode(payload: dict, _: bool = Depends(auth)):
-    m = payload.get("mode")
-    if m not in ("paper", "live"):
-        raise HTTPException(400, "Invalid mode")
-    set_mode(m)
-    notify(f"⚙️ Trade mode set to {m.upper()}")
-    return {"status": "ok", "mode": m}
 
 @app.post("/control/panic")
 def panic(_: bool = Depends(auth)):
