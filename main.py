@@ -15,10 +15,7 @@ import uvicorn
 
 # ================== INIT ==================
 load_dotenv()
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("hedgegram")
 
 CONTROL_API_KEY = os.getenv("CONTROL_API_KEY")
@@ -28,8 +25,8 @@ LOGIN_URL = os.getenv("FLATTRADE_LOGIN_URL")
 
 TRADE_MODE_PIN = os.getenv("TRADE_MODE_PIN", "0000")
 
-MARGIN_ALERT = int(os.getenv("MARGIN_ALERT", "100000"))
-MARGIN_EXIT = int(os.getenv("MARGIN_EXIT", "80000"))
+MARGIN_ALERT = int(os.getenv("MARGIN_ALERT", "170000"))
+MARGIN_EXIT = int(os.getenv("MARGIN_EXIT", "150000"))
 
 LIVE_AUTH_FILE = "live_auth.json"
 TRADE_MODE_FILE = "trade_mode.json"
@@ -55,8 +52,11 @@ def notify(msg: str):
         chat = os.getenv("TELEGRAM_CHAT_ID")
         if not token or not chat:
             return
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        requests.post(url, json={"chat_id": chat, "text": msg}, timeout=5)
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat, "text": msg},
+            timeout=5
+        )
     except Exception:
         pass
 
@@ -91,16 +91,14 @@ def load_live_auth():
 
 # ================== MARGIN ==================
 def fetch_available_margin():
-    """
-    Replace with real broker margin API.
-    """
-    return 250000  # dummy safe margin
+    # 🔴 Replace with real Flattrade margin API
+    return 250000
 
 # ================== PAPER MOCK ==================
 def paper_positions():
     return [
-        {"symbol": "BANKNIFTY", "qty": 25, "avg": 100, "ltp": 110},
-        {"symbol": "BANKNIFTY", "qty": -25, "avg": 105, "ltp": 100},
+        {"symbol": "FINNIFTY", "qty": 40, "avg": 100, "ltp": 110},
+        {"symbol": "FINNIFTY", "qty": -40, "avg": 105, "ltp": 100},
     ]
 
 def calc_pnl(pos):
@@ -130,8 +128,7 @@ def strategy():
                 authd = load_live_auth()
                 if not authd or "jwtToken" not in authd:
                     raise RuntimeError("Live auth missing / expired")
-
-                positions = []  # 🔴 live positions API later
+                positions = []  # 🔴 live fetch later
 
             pnl = calc_pnl(positions)
             margin = fetch_available_margin()
@@ -153,7 +150,17 @@ def strategy():
 
     log.warning("Strategy stopped")
 
-# ================== EXPIRY WATCHER ==================
+# ================== FINNIFTY MONTHLY EXPIRY ==================
+def last_tuesday(year, month):
+    if month == 12:
+        next_month = datetime.date(year + 1, 1, 1)
+    else:
+        next_month = datetime.date(year, month + 1, 1)
+
+    last_day = next_month - datetime.timedelta(days=1)
+    offset = (last_day.weekday() - 1) % 7  # Tuesday = 1
+    return last_day - datetime.timedelta(days=offset)
+
 def expiry_watcher():
     global expiry_done
     while True:
@@ -164,17 +171,20 @@ def expiry_watcher():
                 continue
 
             now = datetime.datetime.now()
+            today = now.date()
+            expiry = last_tuesday(today.year, today.month)
+
             if (
                 not expiry_done
-                and now.weekday() == 3
+                and today == expiry
                 and now.hour == 14
                 and now.minute == 0
             ):
                 expiry_done = True
-                exit_all("EXPIRY AUTO EXIT 2PM")
+                exit_all("FINNIFTY MONTHLY EXPIRY AUTO EXIT 2PM")
 
-        except Exception:
-            pass
+        except Exception as e:
+            log.exception("Expiry watcher error")
 
         time.sleep(30)
 
@@ -183,18 +193,15 @@ def daily_status():
     while True:
         now = datetime.datetime.now()
         if now.hour == 9 and now.minute == 10:
-            try:
-                notify(
-                    "📊 Daily Status\n"
-                    f"Mode: {get_mode().upper()}\n"
-                    f"Running: {running}\n"
-                    f"PnL: ₹{pnl}\n"
-                    f"Margin: ₹{fetch_available_margin()}\n"
-                    f"Positions: {len(positions)}"
-                )
-                time.sleep(60)
-            except Exception:
-                pass
+            notify(
+                "📊 Daily Status\n"
+                f"Mode: {get_mode().upper()}\n"
+                f"Running: {running}\n"
+                f"PnL: ₹{pnl}\n"
+                f"Margin: ₹{fetch_available_margin()}\n"
+                f"Positions: {len(positions)}"
+            )
+            time.sleep(60)
         time.sleep(30)
 
 threading.Thread(target=expiry_watcher, daemon=True).start()
@@ -227,18 +234,18 @@ def status(_: bool = Depends(auth)):
 
 @app.post("/control/mode")
 def mode(payload: dict, _: bool = Depends(auth)):
-    mode = payload.get("mode")
+    m = payload.get("mode")
     pin = payload.get("pin")
 
-    if mode not in ("paper", "live"):
+    if m not in ("paper", "live"):
         raise HTTPException(400, "Invalid mode")
 
     if pin != TRADE_MODE_PIN:
         raise HTTPException(403, "Invalid PIN")
 
-    set_mode(mode)
-    notify(f"⚙️ Trade mode set to {mode.upper()}")
-    return {"status": "ok", "mode": mode}
+    set_mode(m)
+    notify(f"⚙️ Trade mode set to {m.upper()}")
+    return {"status": "ok", "mode": m}
 
 @app.post("/control/totp")
 def totp(payload: dict, _: bool = Depends(auth)):
