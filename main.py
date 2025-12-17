@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-import os
-import time
-import json
-import threading
-import logging
-import hashlib
-import datetime
-import requests
-
+import os, time, json, threading, logging, hashlib, datetime, requests
 from fastapi import FastAPI, Depends, Request, HTTPException
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
@@ -77,23 +69,14 @@ def load_live_auth():
         return None
     return json.load(open(LIVE_AUTH_FILE))
 
-# ================== REAL MARKET DATA ==================
+# ================== REAL LTP ==================
 def fetch_ltp(symbol: str) -> float:
-    """
-    REAL LTP for BOTH paper & live
-    """
     auth = load_live_auth()
     if not auth or "jwtToken" not in auth:
         raise RuntimeError("Live auth missing for LTP")
 
-    headers = {
-        "Authorization": f"Bearer {auth['jwtToken']}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "symbols": [symbol]
-    }
+    headers = {"Authorization": f"Bearer {auth['jwtToken']}"}
+    payload = {"symbols": [symbol]}
 
     r = requests.post(
         "https://api.flattrade.in/market/ltp",
@@ -101,20 +84,16 @@ def fetch_ltp(symbol: str) -> float:
         json=payload,
         timeout=5
     )
-
     data = r.json()
     return float(data[symbol]["ltp"])
 
-# ================== PAPER ENGINE ==================
+# ================== PAPER ==================
 def load_paper_positions():
     if not os.path.exists(PAPER_POS_FILE):
         return []
     return json.load(open(PAPER_POS_FILE))
 
-def save_paper_positions(pos):
-    json.dump(pos, open(PAPER_POS_FILE, "w"))
-
-# ================== POSITION + PNL ==================
+# ================== POSITIONS ==================
 def enrich_positions(raw):
     out = []
     for p in raw:
@@ -134,10 +113,9 @@ def compute_pnl(pos):
 
 # ================== MARGIN ==================
 def fetch_available_margin():
-    # 🔴 Replace later with real Flattrade margin API
-    return 250000
+    return 250000  # replace later with real API
 
-# ================== EXIT ALL ==================
+# ================== EXIT ==================
 def exit_all(reason):
     global running, last_error
     running = False
@@ -147,28 +125,18 @@ def exit_all(reason):
 # ================== STRATEGY ==================
 def strategy():
     global running, positions, pnl
-
-    mode = get_mode()
-    notify(f"✅ Bot started in {mode.upper()} mode")
+    notify(f"✅ Bot started in {get_mode().upper()} mode")
 
     while running:
         try:
-            if mode == "paper":
-                raw = load_paper_positions()
-            else:
-                authd = load_live_auth()
-                if not authd:
-                    raise RuntimeError("Live auth missing")
-                raw = []  # 🔴 live positions API later
-
+            raw = load_paper_positions() if get_mode() == "paper" else []
             positions = enrich_positions(raw)
             pnl = compute_pnl(positions)
-            margin = fetch_available_margin()
 
+            margin = fetch_available_margin()
             if margin <= MARGIN_EXIT:
                 exit_all(f"MARGIN CRITICAL ₹{margin}")
                 break
-
             if margin <= MARGIN_ALERT:
                 notify(f"⚠️ Margin Low Alert ₹{margin}")
 
@@ -176,9 +144,9 @@ def strategy():
             exit_all(str(e))
             break
 
-        time.sleep(5)  # near tick-by-tick
+        time.sleep(5)
 
-# ================== FINNIFTY MONTHLY EXPIRY ==================
+# ================== EXPIRY ==================
 def last_tuesday(y, m):
     nxt = datetime.date(y + (m == 12), 1 if m == 12 else m + 1, 1)
     last = nxt - datetime.timedelta(days=1)
@@ -187,21 +155,18 @@ def last_tuesday(y, m):
 def expiry_watcher():
     global expiry_done
     while True:
-        if not running:
+        if running:
+            now = datetime.datetime.now()
+            if (
+                not expiry_done
+                and now.date() == last_tuesday(now.year, now.month)
+                and now.hour == 14
+                and now.minute == 0
+            ):
+                expiry_done = True
+                exit_all("FINNIFTY MONTHLY EXPIRY AUTO EXIT 2PM")
+        else:
             expiry_done = False
-            time.sleep(30)
-            continue
-
-        now = datetime.datetime.now()
-        if (
-            not expiry_done
-            and now.date() == last_tuesday(now.year, now.month)
-            and now.hour == 14
-            and now.minute == 0
-        ):
-            expiry_done = True
-            exit_all("FINNIFTY MONTHLY EXPIRY AUTO EXIT 2PM")
-
         time.sleep(30)
 
 threading.Thread(target=expiry_watcher, daemon=True).start()
@@ -210,10 +175,9 @@ threading.Thread(target=expiry_watcher, daemon=True).start()
 @app.post("/control/start")
 def start(_: bool = Depends(auth)):
     global running
-    if running:
-        return {"status": "already_running"}
-    running = True
-    threading.Thread(target=strategy, daemon=True).start()
+    if not running:
+        running = True
+        threading.Thread(target=strategy, daemon=True).start()
     return {"status": "started"}
 
 @app.get("/control/status")
@@ -222,8 +186,15 @@ def status(_: bool = Depends(auth)):
         "mode": get_mode(),
         "running": running,
         "pnl": pnl,
-        "positions": positions,
+        "positions_count": len(positions),
         "last_error": last_error
+    }
+
+@app.get("/control/positions")
+def get_positions(_: bool = Depends(auth)):
+    return {
+        "pnl": pnl,
+        "positions": positions
     }
 
 @app.post("/control/mode")
