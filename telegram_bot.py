@@ -1,84 +1,217 @@
 #!/usr/bin/env python3
-import os
-import aiohttp
+import os, time, json, threading, logging, hashlib, datetime, requests
+from fastapi import FastAPI, Depends, Request, HTTPException
+from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import uvicorn
 
+# ================== INIT ==================
 load_dotenv()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("hedgegram")
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ADMIN_CHAT_ID = str(os.getenv("TELEGRAM_CHAT_ID"))
-CONTROL_API_URL = os.getenv("CONTROL_API_URL", "http://127.0.0.1:8000/control")
 CONTROL_API_KEY = os.getenv("CONTROL_API_KEY")
+FLAT_ID = os.getenv("FLATTRADE_CLIENT_ID")
+FLAT_SECRET = os.getenv("FLATTRADE_API_SECRET")
+LOGIN_URL = os.getenv("FLATTRADE_LOGIN_URL")
 
-def is_admin(update: Update) -> bool:
-    return str(update.effective_chat.id) == ADMIN_CHAT_ID
+TRADE_MODE_PIN = os.getenv("TRADE_MODE_PIN", "0000")
 
-async def call_api(endpoint, method="GET", payload=None):
-    headers = {"x-api-key": CONTROL_API_KEY}
-    url = f"{CONTROL_API_URL}/{endpoint}"
-    async with aiohttp.ClientSession() as session:
-        if method == "POST":
-            async with session.post(url, json=payload, headers=headers) as r:
-                return await r.text()
-        async with session.get(url, headers=headers) as r:
-            return await r.text()
+MARGIN_ALERT = int(os.getenv("MARGIN_ALERT", "170000"))
+MARGIN_EXIT  = int(os.getenv("MARGIN_EXIT",  "150000"))
 
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if is_admin(update):
-        await update.message.reply_text(await call_api("start", "POST"))
+LIVE_AUTH_FILE  = "live_auth.json"
+TRADE_MODE_FILE = "trade_mode.json"
+PAPER_POS_FILE  = "paper_positions.json"
 
-async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if is_admin(update):
-        await update.message.reply_text(await call_api("stop", "POST"))
+app = FastAPI(title="Hedgegram Control")
 
-async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if is_admin(update):
-        await update.message.reply_text(await call_api("status"))
+running = False
+positions = []
+pnl = 0.0
+last_error = None
+expiry_done = False
 
-async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update):
-        return
-    if len(context.args) != 2:
-        await update.message.reply_text("Usage:\n/mode paper <PIN>\n/mode live <PIN>")
-        return
-    mode, pin = context.args
-    await update.message.reply_text(
-        await call_api("mode", "POST", {"mode": mode, "pin": pin})
-    )
+# ================== SECURITY ==================
+def auth(req: Request):
+    if req.headers.get("x-api-key") != CONTROL_API_KEY:
+        raise HTTPException(401, "Invalid API key")
+    return True
 
-async def totp_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if is_admin(update) and context.args:
-        await update.message.reply_text(
-            await call_api("totp", "POST", {"totp": context.args[0]})
+# ================== TELEGRAM ALERT ==================
+def notify(msg: str):
+    try:
+        token = os.getenv("TELEGRAM_BOT_TOKEN")
+        chat  = os.getenv("TELEGRAM_CHAT_ID")
+        if not token or not chat:
+            return
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat, "text": msg},
+            timeout=5
         )
+    except Exception:
+        pass
 
-async def panic_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update):
-        return
-    if not context.args or context.args[0].lower() != "confirm":
-        await update.message.reply_text("⚠️ To confirm: /panic confirm")
-        return
-    await update.message.reply_text(await call_api("panic", "POST"))
+# ================== TRADE MODE ==================
+def get_mode():
+    if not os.path.exists(TRADE_MODE_FILE):
+        return "paper"
+    return json.load(open(TRADE_MODE_FILE)).get("mode", "paper")
 
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if is_admin(update):
-        await update.message.reply_text(
-            "/start\n/stop\n/status\n/mode paper <PIN>\n/mode live <PIN>\n"
-            "/totp 123456\n/panic confirm"
-        )
+def set_mode(mode: str):
+    json.dump({"mode": mode}, open(TRADE_MODE_FILE, "w"))
 
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("stop", stop_cmd))
-    app.add_handler(CommandHandler("status", status_cmd))
-    app.add_handler(CommandHandler("mode", mode_cmd))
-    app.add_handler(CommandHandler("totp", totp_cmd))
-    app.add_handler(CommandHandler("panic", panic_cmd))
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.run_polling()
+# ================== LIVE AUTH ==================
+def load_live_auth():
+    if not os.path.exists(LIVE_AUTH_FILE):
+        return None
+    return json.load(open(LIVE_AUTH_FILE))
 
+# ================== REAL MARKET DATA ==================
+def fetch_ltp(symbol: str) -> float:
+    """
+    🔴 MUST be real market price
+    Replace URL with Flattrade LTP API
+    """
+    # Dummy placeholder
+    return 21500.0
+
+# ================== PAPER ENGINE ==================
+def load_paper_positions():
+    if not os.path.exists(PAPER_POS_FILE):
+        return []
+    return json.load(open(PAPER_POS_FILE))
+
+def save_paper_positions(pos):
+    json.dump(pos, open(PAPER_POS_FILE, "w"))
+
+def paper_place_order(symbol, qty):
+    pos = load_paper_positions()
+    ltp = fetch_ltp(symbol)
+    pos.append({
+        "symbol": symbol,
+        "qty": qty,
+        "avg": ltp
+    })
+    save_paper_positions(pos)
+
+# ================== PNL ==================
+def compute_positions_with_ltp(pos):
+    out = []
+    for p in pos:
+        ltp = fetch_ltp(p["symbol"])
+        out.append({
+            **p,
+            "ltp": ltp,
+            "pnl": round((ltp - p["avg"]) * p["qty"], 2)
+        })
+    return out
+
+def compute_pnl(pos):
+    return round(sum(p["pnl"] for p in pos), 2)
+
+# ================== MARGIN ==================
+def fetch_available_margin():
+    # Replace with broker API
+    return 250000
+
+# ================== EXIT ALL ==================
+def exit_all(reason):
+    global running, last_error
+    running = False
+    last_error = reason
+    notify(f"🚨 BOT STOPPED\nReason: {reason}")
+
+# ================== STRATEGY ==================
+def strategy():
+    global running, positions, pnl
+
+    mode = get_mode()
+    notify(f"✅ Bot started in {mode.upper()} mode")
+
+    while running:
+        try:
+            if mode == "paper":
+                raw = load_paper_positions()
+            else:
+                authd = load_live_auth()
+                if not authd:
+                    raise RuntimeError("Live auth missing")
+                raw = []  # live positions API later
+
+            positions = compute_positions_with_ltp(raw)
+            pnl = compute_pnl(positions)
+            margin = fetch_available_margin()
+
+            if margin <= MARGIN_EXIT:
+                exit_all(f"MARGIN CRITICAL ₹{margin}")
+                break
+
+            if margin <= MARGIN_ALERT:
+                notify(f"⚠️ Margin Low Alert ₹{margin}")
+
+        except Exception as e:
+            exit_all(str(e))
+            break
+
+        time.sleep(10)
+
+# ================== FINNIFTY MONTHLY EXPIRY ==================
+def last_tuesday(y, m):
+    nxt = datetime.date(y + (m==12), 1 if m==12 else m+1, 1)
+    last = nxt - datetime.timedelta(days=1)
+    return last - datetime.timedelta(days=(last.weekday()-1)%7)
+
+def expiry_watcher():
+    global expiry_done
+    while True:
+        if not running:
+            expiry_done = False
+            time.sleep(30)
+            continue
+
+        now = datetime.datetime.now()
+        if (
+            not expiry_done
+            and now.date() == last_tuesday(now.year, now.month)
+            and now.hour == 14
+            and now.minute == 0
+        ):
+            expiry_done = True
+            exit_all("FINNIFTY MONTHLY EXPIRY AUTO EXIT 2PM")
+        time.sleep(30)
+
+threading.Thread(target=expiry_watcher, daemon=True).start()
+
+# ================== API ==================
+@app.post("/control/start")
+def start(_: bool = Depends(auth)):
+    global running
+    if running:
+        return {"status": "already_running"}
+    running = True
+    threading.Thread(target=strategy, daemon=True).start()
+    return {"status": "started"}
+
+@app.get("/control/status")
+def status(_: bool = Depends(auth)):
+    return {
+        "mode": get_mode(),
+        "running": running,
+        "pnl": pnl,
+        "positions": positions,
+        "last_error": last_error
+    }
+
+@app.post("/control/mode")
+def mode(payload: dict, _: bool = Depends(auth)):
+    if payload.get("pin") != TRADE_MODE_PIN:
+        raise HTTPException(403, "Invalid PIN")
+    set_mode(payload["mode"])
+    notify(f"⚙️ Mode changed to {payload['mode'].upper()}")
+    return {"status": "ok"}
+
+# ================== RUN ==================
 if __name__ == "__main__":
-    main()
+    uvicorn.run(app, host="127.0.0.1", port=8000)
