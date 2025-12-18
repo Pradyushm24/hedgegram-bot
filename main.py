@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-import os, time, json, threading, logging, hashlib, datetime, requests
+import os, time, json, threading, logging, datetime, requests
 from fastapi import FastAPI, Depends, Request, HTTPException
-from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 import uvicorn
 
@@ -13,7 +12,6 @@ log = logging.getLogger("hedgegram")
 CONTROL_API_KEY = os.getenv("CONTROL_API_KEY")
 
 FLAT_ID     = os.getenv("FLATTRADE_CLIENT_ID")
-FLAT_SECRET = os.getenv("FLATTRADE_API_SECRET")
 LOGIN_URL   = os.getenv("FLATTRADE_LOGIN_URL")
 
 TRADE_MODE_PIN = os.getenv("TRADE_MODE_PIN", "0000")
@@ -39,53 +37,89 @@ def auth(req: Request):
         raise HTTPException(401, "Invalid API key")
     return True
 
-# ================== TELEGRAM ALERT ==================
+# ================== TELEGRAM ==================
 def notify(msg: str):
     try:
         token = os.getenv("TELEGRAM_BOT_TOKEN")
         chat  = os.getenv("TELEGRAM_CHAT_ID")
-        if not token or not chat:
-            return
-        requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat, "text": msg},
-            timeout=5
-        )
+        if token and chat:
+            requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat, "text": msg},
+                timeout=5
+            )
     except Exception:
         pass
 
-# ================== TRADE MODE ==================
+# ================== MODE ==================
 def get_mode():
     if not os.path.exists(TRADE_MODE_FILE):
         return "paper"
     return json.load(open(TRADE_MODE_FILE)).get("mode", "paper")
 
-def set_mode(mode: str):
+def set_mode(mode):
     json.dump({"mode": mode}, open(TRADE_MODE_FILE, "w"))
 
-# ================== LIVE AUTH ==================
+# ================== AUTH ==================
 def load_live_auth():
     if not os.path.exists(LIVE_AUTH_FILE):
         return None
     return json.load(open(LIVE_AUTH_FILE))
 
-# ================== REAL LTP ==================
+# ================== LTP ==================
 def fetch_ltp(symbol: str) -> float:
     auth = load_live_auth()
     if not auth or "jwtToken" not in auth:
-        raise RuntimeError("Live auth missing for LTP")
+        raise RuntimeError("Live auth missing")
 
-    headers = {"Authorization": f"Bearer {auth['jwtToken']}"}
-    payload = {"symbols": [symbol]}
+    headers = {
+        "Authorization": f"Bearer {auth['jwtToken']}",
+        "Content-Type": "application/json"
+    }
 
     r = requests.post(
         "https://api.flattrade.in/market/ltp",
         headers=headers,
-        json=payload,
+        json={"symbols": [symbol]},
         timeout=5
     )
+
     data = r.json()
     return float(data[symbol]["ltp"])
+
+# ================== LIVE POSITIONS ==================
+def fetch_live_positions():
+    auth = load_live_auth()
+    if not auth or "jwtToken" not in auth:
+        raise RuntimeError("Live auth missing")
+
+    headers = {
+        "Authorization": f"Bearer {auth['jwtToken']}",
+        "Content-Type": "application/json"
+    }
+
+    r = requests.post(
+        "https://piconnect.flattrade.in/PiConnectTP/PositionBook",
+        headers=headers,
+        json={"clientcode": FLAT_ID},
+        timeout=10
+    )
+
+    data = r.json()
+    out = []
+
+    for p in data:
+        qty = int(p["qty"])
+        if qty == 0:
+            continue
+
+        out.append({
+            "symbol": p["tsym"],
+            "qty": qty,
+            "avg": float(p["netavgprc"])
+        })
+
+    return out
 
 # ================== PAPER ==================
 def load_paper_positions():
@@ -93,7 +127,7 @@ def load_paper_positions():
         return []
     return json.load(open(PAPER_POS_FILE))
 
-# ================== POSITIONS ==================
+# ================== PNL ==================
 def enrich_positions(raw):
     out = []
     for p in raw:
@@ -113,7 +147,7 @@ def compute_pnl(pos):
 
 # ================== MARGIN ==================
 def fetch_available_margin():
-    return 250000  # replace later with real API
+    return 250000  # TODO: replace with real API
 
 # ================== EXIT ==================
 def exit_all(reason):
@@ -129,7 +163,11 @@ def strategy():
 
     while running:
         try:
-            raw = load_paper_positions() if get_mode() == "paper" else []
+            if get_mode() == "paper":
+                raw = load_paper_positions()
+            else:
+                raw = fetch_live_positions()
+
             positions = enrich_positions(raw)
             pnl = compute_pnl(positions)
 
@@ -186,16 +224,13 @@ def status(_: bool = Depends(auth)):
         "mode": get_mode(),
         "running": running,
         "pnl": pnl,
-        "positions_count": len(positions),
+        "positions": len(positions),
         "last_error": last_error
     }
 
 @app.get("/control/positions")
-def get_positions(_: bool = Depends(auth)):
-    return {
-        "pnl": pnl,
-        "positions": positions
-    }
+def api_positions(_: bool = Depends(auth)):
+    return {"pnl": pnl, "positions": positions}
 
 @app.post("/control/mode")
 def mode(payload: dict, _: bool = Depends(auth)):
