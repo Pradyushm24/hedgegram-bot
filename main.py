@@ -77,7 +77,7 @@ def totp(payload: dict, _: bool = Depends(auth)):
 
     if "jwtToken" not in data:
         notify("❌ TOTP login failed")
-        return JSONResponse(status_code=502, content=data)
+        return {"error": data}
 
     with open("live_auth.json", "w") as f:
         json.dump(data, f)
