@@ -6,9 +6,10 @@ import time
 import logging
 from fastapi import FastAPI, Depends, Request, HTTPException
 from dotenv import load_dotenv
-load_dotenv(os.getenv("ENV_FILE", ".env"))
-import uvicorn
 
+load_dotenv(os.getenv("ENV_FILE", ".env"))
+
+import uvicorn
 from paper_engine import paper_positions_with_pnl
 from live_engine import live_positions_with_pnl
 
