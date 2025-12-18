@@ -60,7 +60,7 @@ def totp(payload: dict, _: bool = Depends(auth)):
         raise HTTPException(400, "Missing TOTP")
 
     pwd = hashlib.sha256(
-        (FLAT_ID + code + FLAT_SECRET).encode()
+        (FLAT_ID + code + os.getenv("FLATTRADE_API_SECRET")).encode()
     ).hexdigest()
 
     r = requests.post(
@@ -77,7 +77,7 @@ def totp(payload: dict, _: bool = Depends(auth)):
 
     if "jwtToken" not in data:
         notify("❌ TOTP login failed")
-        return {"error": data}
+        return JSONResponse(status_code=502, content=data)
 
     with open("live_auth.json", "w") as f:
         json.dump(data, f)
