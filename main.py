@@ -226,6 +226,7 @@ def start(_: bool = Depends(auth)):
         threading.Thread(target=strategy, daemon=True).start()
     return {"status": "started"}
 
+
 @app.get("/control/status")
 def status(_: bool = Depends(auth)):
     return {
@@ -236,9 +237,15 @@ def status(_: bool = Depends(auth)):
         "last_error": last_error
     }
 
+
+# ✅ THIS IS REQUIRED FOR TELEGRAM /positions
 @app.get("/control/positions")
 def api_positions(_: bool = Depends(auth)):
-    return {"pnl": pnl, "positions": positions}
+    return {
+        "pnl": pnl,
+        "positions": positions
+    }
+
 
 @app.post("/control/mode")
 def mode(payload: dict, _: bool = Depends(auth)):
