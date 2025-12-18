@@ -50,6 +50,40 @@ def notify(msg: str):
             )
     except Exception:
         pass
+# ================== TOTP LOGIN ==================
+import hashlib
+
+@app.post("/control/totp")
+def totp(payload: dict, _: bool = Depends(auth)):
+    code = payload.get("totp")
+    if not code:
+        raise HTTPException(400, "Missing TOTP")
+
+    pwd = hashlib.sha256(
+        (FLAT_ID + code + FLAT_SECRET).encode()
+    ).hexdigest()
+
+    r = requests.post(
+        LOGIN_URL,
+        json={
+            "UserName": FLAT_ID,
+            "totp": code,
+            "password": pwd
+        },
+        timeout=15
+    )
+
+    data = r.json()
+
+    if "jwtToken" not in data:
+        notify("❌ TOTP login failed")
+        return {"error": data}
+
+    with open("live_auth.json", "w") as f:
+        json.dump(data, f)
+
+    notify("🔐 Live access token refreshed")
+    return {"status": "ok"}
 
 # ================== MODE ==================
 def get_mode():
