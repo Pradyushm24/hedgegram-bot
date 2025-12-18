@@ -11,8 +11,8 @@ log = logging.getLogger("hedgegram")
 
 CONTROL_API_KEY = os.getenv("CONTROL_API_KEY")
 
-FLAT_ID     = os.getenv("FLATTRADE_CLIENT_ID")
-LOGIN_URL   = os.getenv("FLATTRADE_LOGIN_URL")
+FLAT_ID   = os.getenv("FLATTRADE_CLIENT_ID")
+LOGIN_URL = os.getenv("FLATTRADE_LOGIN_URL")
 
 TRADE_MODE_PIN = os.getenv("TRADE_MODE_PIN", "0000")
 
@@ -60,17 +60,17 @@ def get_mode():
 def set_mode(mode):
     json.dump({"mode": mode}, open(TRADE_MODE_FILE, "w"))
 
-# ================== AUTH ==================
+# ================== LIVE AUTH ==================
 def load_live_auth():
     if not os.path.exists(LIVE_AUTH_FILE):
         return None
     return json.load(open(LIVE_AUTH_FILE))
 
-# ================== LTP ==================
+# ================== REAL LTP ==================
 def fetch_ltp(symbol: str) -> float:
     auth = load_live_auth()
     if not auth or "jwtToken" not in auth:
-        raise RuntimeError("Live auth missing")
+        raise RuntimeError("Live auth missing for LTP")
 
     headers = {
         "Authorization": f"Bearer {auth['jwtToken']}",
@@ -109,34 +109,45 @@ def fetch_live_positions():
     out = []
 
     for p in data:
-        qty = int(p["qty"])
+        qty = int(p.get("netqty", 0))
         if qty == 0:
             continue
 
         out.append({
             "symbol": p["tsym"],
-            "qty": qty,
+            "qty": abs(qty),
+            "side": "SELL" if qty < 0 else "BUY",
             "avg": float(p["netavgprc"])
         })
 
     return out
 
-# ================== PAPER ==================
+# ================== PAPER POSITIONS ==================
 def load_paper_positions():
     if not os.path.exists(PAPER_POS_FILE):
         return []
     return json.load(open(PAPER_POS_FILE))
 
-# ================== PNL ==================
+# ================== POSITION + PNL (✅ FIXED) ==================
 def enrich_positions(raw):
     out = []
     for p in raw:
         ltp = fetch_ltp(p["symbol"])
-        pnl = round((ltp - p["avg"]) * p["qty"], 2)
+
+        side = p.get("side", "BUY").upper()
+        qty  = int(p["qty"])
+        avg  = float(p["avg"])
+
+        if side == "SELL":
+            pnl = round((avg - ltp) * qty, 2)
+        else:
+            pnl = round((ltp - avg) * qty, 2)
+
         out.append({
             "symbol": p["symbol"],
-            "qty": p["qty"],
-            "avg": p["avg"],
+            "side": side,
+            "qty": qty,
+            "avg": avg,
             "ltp": ltp,
             "pnl": pnl
         })
@@ -147,7 +158,8 @@ def compute_pnl(pos):
 
 # ================== MARGIN ==================
 def fetch_available_margin():
-    return 250000  # TODO: replace with real API
+    # TODO: replace with real Flattrade margin API
+    return 250000
 
 # ================== EXIT ==================
 def exit_all(reason):
@@ -163,11 +175,7 @@ def strategy():
 
     while running:
         try:
-            if get_mode() == "paper":
-                raw = load_paper_positions()
-            else:
-                raw = fetch_live_positions()
-
+            raw = load_paper_positions() if get_mode() == "paper" else fetch_live_positions()
             positions = enrich_positions(raw)
             pnl = compute_pnl(positions)
 
@@ -182,9 +190,9 @@ def strategy():
             exit_all(str(e))
             break
 
-        time.sleep(5)
+        time.sleep(5)  # near tick-by-tick
 
-# ================== EXPIRY ==================
+# ================== FINNIFTY MONTHLY EXPIRY ==================
 def last_tuesday(y, m):
     nxt = datetime.date(y + (m == 12), 1 if m == 12 else m + 1, 1)
     last = nxt - datetime.timedelta(days=1)
