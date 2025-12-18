@@ -2,10 +2,11 @@
 import os
 import aiohttp
 from dotenv import load_dotenv
+
 load_dotenv(os.getenv("ENV_FILE", ".env"))
+
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-
 # ================== INIT ==================
 load_dotenv()
 
