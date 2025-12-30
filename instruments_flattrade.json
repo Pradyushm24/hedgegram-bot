@@ -1,0 +1,38 @@
+[
+  {
+    "symbol": "FINNIFTY",
+    "expiry": "2024-12-31",
+    "strike": 21000,
+    "option": "CE",
+    "side": "SELL",
+    "qty": 65,
+    "token": "PASTE_TOKEN_HERE"
+  },
+  {
+    "symbol": "FINNIFTY",
+    "expiry": "2024-12-31",
+    "strike": 21000,
+    "option": "PE",
+    "side": "SELL",
+    "qty": 65,
+    "token": "PASTE_TOKEN_HERE"
+  },
+  {
+    "symbol": "FINNIFTY",
+    "expiry": "2024-12-31",
+    "strike": 21500,
+    "option": "CE",
+    "side": "BUY",
+    "qty": 65,
+    "token": "PASTE_TOKEN_HERE"
+  },
+  {
+    "symbol": "FINNIFTY",
+    "expiry": "2024-12-31",
+    "strike": 20500,
+    "option": "PE",
+    "side": "BUY",
+    "qty": 65,
+    "token": "PASTE_TOKEN_HERE"
+  }
+]

@@ -14,6 +14,12 @@ flattrade_code.json
 *.log
 *.db
 
+# Runtime / state files
+paper_positions.json
+trade_mode.json
+main.py.save
+logs/
+
 # Editor/OS
 .vscode/
 .idea/
